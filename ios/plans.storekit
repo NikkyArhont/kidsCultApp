@@ -1,0 +1,173 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "9FF62D3D",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6751415455",
+    "_developerTeamID" : "M6HBLHGRW6",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 781166144.16954303,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store Sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Subscription Status"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Transaction"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Refund Request Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Offer Code Redeem Sheet"
+      }
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21795745",
+      "localizations" : [
+
+      ],
+      "name" : "plans",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "5.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6753348238",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Базовый тариф на 1го ребенка",
+              "displayName" : "Тариф Базовый",
+              "locale" : "ru"
+            }
+          ],
+          "productID" : "month_base",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Подписка на месяц - Базовый",
+          "subscriptionGroupID" : "21795745",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "17.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "6753348294",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Премиум тариф до 10 детей",
+              "displayName" : "Премиум тариф",
+              "locale" : "ru"
+            }
+          ],
+          "productID" : "month_premium",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Подписка на месяц - Премиум",
+          "subscriptionGroupID" : "21795745",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "9.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6753347200",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Подписка на месяц. Можно добавить до 5 детей",
+              "displayName" : "Стандарт",
+              "locale" : "ru"
+            }
+          ],
+          "productID" : "month_standart",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Подписка на месяц - Стандарт",
+          "subscriptionGroupID" : "21795745",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

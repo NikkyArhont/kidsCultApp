@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "419315761443",
+    "project_id": "kidscult-a5d7e",
+    "storage_bucket": "kidscult-a5d7e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:419315761443:android:6c30eeee9668eb1fb78c96",
+        "android_client_info": {
+          "package_name": "com.kidscult.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBRCanvg0-mpxH4YONsoxBhOmupl-q0MwA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
