@@ -29,12 +29,7 @@ class _PhoneOtpInputState extends State<PhoneOtpInput> {
       builder: (context, state) {
         String? errorText = state is PhoneAuthFailure ? state.errorMessage : null;
         bool isValid = ((otp ?? '').trim()).length == 6;
-        String? code;
-        if (state is PhoneAuthCodeSentSuccess) {
-          code = state.code;
-        } else if (state is PhoneAuthResendOTPSuccess) {
-          code = state.code;
-        }
+        // Test code display removed.
         return GestureDetector(
           behavior: HitTestBehavior.translucent,
           onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
@@ -65,11 +60,7 @@ class _PhoneOtpInputState extends State<PhoneOtpInput> {
                           ),
                         ),
                         const SizedBox(height: 40),
-                        if (code != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8, bottom: 18, left: 24),
-                            child: AppText(text: '${'testCodePrefix'.tr()}: $code', color: greyscale600),
-                          ),
+                        // Removed test code widget.
                         OtpInput(
                           errorText: errorText,
                           onCompleted: (v) {

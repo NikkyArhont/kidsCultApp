@@ -5,6 +5,10 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:dio/dio.dart';
+import 'package:crypto/crypto.dart';
+import 'dart:convert';
+import 'package:uuid/uuid.dart';
 
 part 'state.dart';
 
@@ -35,6 +39,44 @@ class PhoneAuthCubit extends Cubit<PhoneAuthState> {
       final HttpsCallableResult result = await callable.call(dataToSend);
       print('Result: ${result.data}');
       final code = result.data['code'];
+      
+      try {
+        final configDoc = await _fs.collection('config').doc('sms_settings').get();
+        if (configDoc.exists) {
+          final login = configDoc.data()?['login'];
+          final apiKey = configDoc.data()?['api_key'];
+          
+          if (login != null && apiKey != null) {
+            final ts = const Uuid().v4();
+            final secret = md5.convert(utf8.encode(ts + apiKey)).toString();
+            
+            final dio = Dio();
+            dio.options.headers['login'] = login;
+            dio.options.headers['ts'] = ts;
+            dio.options.headers['secret'] = secret;
+            
+            final response = await dio.post(
+              'https://cp.redsms.ru/api/message',
+              data: {
+                'from': 'FamilyCult',
+                'to': phone,
+                'text': 'Код для входа в приложение KidsCult: $code',
+                'route': 'sms',
+              },
+            );
+            print('SMS successfully sent via RedSMS. Response: ${response.data}');
+          } else {
+            print('RedSMS config missing login or api_key');
+          }
+        } else {
+          print('RedSMS config doc not found');
+        }
+      } on DioException catch (e) {
+        print('RedSMS DioError: ${e.response?.data ?? e.message}');
+      } catch (e) {
+        print('RedSMS Error: $e');
+      }
+
       if (isResend) {
         emit(PhoneAuthResendOTPSuccess(code: code));
       } else {
@@ -47,7 +89,12 @@ class PhoneAuthCubit extends Cubit<PhoneAuthState> {
           : e.message == 'Wait before requesting another code.'
               ? 'waitForResend'.tr()
               : e.message ?? e.code;
-      emit(PhoneAuthFailure(errorMessage: message));
+      
+      if (e.message == 'Wait before requesting another code.' && !isResend) {
+        emit(PhoneAuthCodeSentSuccess(code: ''));
+      } else {
+        emit(PhoneAuthFailure(errorMessage: message));
+      }
     } catch (e) {
       print('Error {sendCode}: $e');
       emit(PhoneAuthFailure(errorMessage: e.toString()));

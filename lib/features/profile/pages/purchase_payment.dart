@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:child_tracker/index.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 class PurchasePaymentScreen extends StatefulWidget {
@@ -18,7 +20,7 @@ class PurchasePaymentScreen extends StatefulWidget {
 }
 
 class _PurchasePaymentScreenState extends State<PurchasePaymentScreen> {
-  late final WebViewController _controller;
+  WebViewController? _controller;
   bool isProcessing = false;
 
   StreamSubscription<DocumentSnapshot>? _orderSubscription;
@@ -48,47 +50,31 @@ class _PurchasePaymentScreenState extends State<PurchasePaymentScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onUrlChange: (change) {
-            print('*****onUrlChange: ${change.url}');
-            if (change.url?.startsWith('https://telegram-app-kidscult.web.app') ?? false) {
-              // Можно тут закрыть экран и проверить статус платежа
-              // Navigator.of(context).pop(true); // true = оплата завершена
-              print('***********Payment success redirect2');
-              // context.replace('/payment_success');
-              if (!isProcessing) {
-                setState(() {
-                  isProcessing = true;
-                });
-                _listenToChatUpdates();
+    if (kIsWeb) {
+      isProcessing = true;
+      _listenToChatUpdates();
+      launchUrl(Uri.parse(widget.url), mode: LaunchMode.externalApplication);
+    } else {
+      _controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onUrlChange: (change) {
+              print('*****onUrlChange: ${change.url}');
+              if (change.url?.startsWith('https://telegram-app-kidscult.web.app') ?? false) {
+                print('***********Payment success redirect2');
+                if (!isProcessing) {
+                  setState(() {
+                    isProcessing = true;
+                  });
+                  _listenToChatUpdates();
+                }
               }
-            }
-          },
-          // onNavigationRequest: (request) {
-          //    print('*****onNavigationRequest: ${request.url}');
-          //    if(request.url.startsWith(''))
-          //    return NavigationDecision.navigate;
-          // },
-          onPageFinished: (url) {
-            // if (url.startsWith('https://telegram-app-kidscult.web.app')) {
-            //   // Можно тут закрыть экран и проверить статус платежа
-            //   // Navigator.of(context).pop(true); // true = оплата завершена
-            //   print('***********Payment success redirect');
-            //   // context.replace('/payment_success');
-            //   if (!isProcessing) {
-            //     setState(() {
-            //       isProcessing = true;
-            //     });
-            //     _listenToChatUpdates();
-            //   }
-            // }
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
+            },
+          ),
+        )
+        ..loadRequest(Uri.parse(widget.url));
+    }
   }
 
   @override
@@ -102,7 +88,9 @@ class _PurchasePaymentScreenState extends State<PurchasePaymentScreen> {
     return SafeArea(
       child: Scaffold(
         backgroundColor: white,
-        body: isProcessing ? processingLoading() : WebViewWidget(controller: _controller),
+        body: isProcessing || _controller == null
+            ? processingLoading()
+            : WebViewWidget(controller: _controller!),
       ),
     );
   }

@@ -16,12 +16,24 @@ void showLogoutDialog(BuildContext context) async {
   );
 
   if (result == true) {
-    final StorageService storageService = sl();
-    final LocalNotificationService fcm = sl();
-    await storageService.clearAllStorage();
-    await fcm.cancelAllNotifications();
-    if (context.mounted) await context.read<UserCubit>().onDeleteFcmToken();
-    await FirebaseAuth.instance.signOut();
+    try {
+      final StorageService storageService = sl();
+      final LocalNotificationService fcm = sl();
+      await storageService.clearAllStorage();
+      await fcm.cancelAllNotifications();
+      if (context.mounted) {
+        await context.read<UserCubit>().onDeleteFcmToken();
+      }
+    } catch (e) {
+      print('Error during logout preparation: $e');
+    }
+
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (e) {
+      print('Error signing out from FirebaseAuth: $e');
+    }
+    
     if (context.mounted) {
       context.go('/logout_result', extra: 'loggingOut'.tr());
     }

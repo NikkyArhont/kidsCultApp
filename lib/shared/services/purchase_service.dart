@@ -73,6 +73,14 @@ class PaymentService {
       final callable = _functions.httpsCallable('initialPayment');
       final result = await callable.call({'order_id': newOrderRef.id});
 
+      if (result.data['status'] == 'error') {
+        throw Exception(result.data['body'] ?? 'Unknown payment error');
+      }
+
+      if (result.data['url'] == null) {
+        throw Exception('Payment URL is null: ${result.data}');
+      }
+
       final data = {
         "url": result.data['url'],
         "order_id": newOrderRef.id,
@@ -102,6 +110,14 @@ class PaymentService {
 
       final callable = _functions.httpsCallable('initialPayment');
       final result = await callable.call({'order_id': newOrderRef.id});
+
+      if (result.data['status'] == 'error') {
+        throw Exception(result.data['body'] ?? 'Unknown payment error');
+      }
+
+      if (result.data['url'] == null) {
+        throw Exception('Payment URL is null: ${result.data}');
+      }
 
       final data = {
         "url": result.data['url'],

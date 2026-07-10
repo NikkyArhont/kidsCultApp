@@ -62,8 +62,13 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<void> onDeleteFcmToken() async {
-    await state?.ref.update({'fcm_token': null});
-    emit(null);
+    try {
+      await state?.ref.update({'fcm_token': null});
+    } catch (e) {
+      print('Error onDeleteFcmToken: $e');
+    } finally {
+      emit(null);
+    }
   }
 
   Future<UserModel> getUserByRef(DocumentReference ref) async {
