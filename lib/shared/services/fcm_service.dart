@@ -1,11 +1,12 @@
+import 'dart:async';
 import 'dart:developer';
 
 import 'package:child_tracker/index.dart';
+import 'package:child_tracker/shared/services/notification_deduplicator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:cloud_functions/cloud_functions.dart' as cf;
-import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 
 class FirebaseMessaginService {
   final FirebaseMessaging _fcm;
@@ -29,225 +30,181 @@ class FirebaseMessaginService {
         _currentChatCubit = currentChatCubit,
         _functions = functions;
 
-  List<String> receivedNotificationIds = [];
+  final NotificationDeduplicator _delivered = NotificationDeduplicator();
+  final NotificationDeduplicator _opened = NotificationDeduplicator();
+  StreamSubscription<RemoteMessage>? _messageSubscription;
+  StreamSubscription<RemoteMessage>? _openedSubscription;
+  StreamSubscription<String>? _tokenSubscription;
+  Future<void>? _setupFuture;
+  String? _activeUserId;
+  int _sessionGeneration = 0;
+  bool _readInitialMessage = false;
 
-  Future<void> setupFCM(BuildContext context) async {
-    await _fcm.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+  /// Own one set of listeners per signed-in session, independently of shell pages.
+  Future<void> setupFCM() {
+    final userId = _userCubit.state?.id;
+    if (userId == null) return Future.value();
+    if (_activeUserId == userId && _setupFuture != null) return _setupFuture!;
+    _activeUserId = userId;
+    final generation = ++_sessionGeneration;
+    return _setupFuture = _setupFCM(userId, generation);
+  }
 
-    String? token = await _fcm.getToken();
-    await _setFCMToken(token);
+  bool _isCurrentSession(String userId, int generation) =>
+      generation == _sessionGeneration && _activeUserId == userId && _userCubit.state?.id == userId;
 
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      log('Message: ${message.messageId} TITLE: ${message.notification?.title}:  BODY: ${message.notification?.body} \n DATA: ${message.data}');
-      final notification = message.notification;
-      if (notification != null) {
-        bool alreadyView = isNotificationReceived(message.messageId ?? '');
-        if (alreadyView) {
-          log('Message already viewed: ${message.messageId}');
-          return;
-        }
-
-        final Map<String, dynamic> notificationData = message.data;
-        NotificationType type = notificationTypeFromString(notificationData['type']);
-
-        onTap() {
-          if (type == NotificationType.reminder ||
-              type == NotificationType.taskComplete ||
-              type == NotificationType.taskRework ||
-              type == NotificationType.taskCanceled ||
-              type == NotificationType.taskDeleted ||
-              type == NotificationType.taskCreated ||
-              type == NotificationType.taskReview) {
-            final String? taskId = notificationData['task_id'];
-            if (taskId == null) return;
-            final taskRef = _fs.collection('tasks').doc(taskId);
-            final data = {'task': null, 'taskRef': taskRef};
-            if (context.mounted) {
-              context.push('/task_detail', extra: data);
-            }
-          } else if (type == NotificationType.bonusCreated ||
-              type == NotificationType.bonusNeedApprove ||
-              type == NotificationType.bonusCanceled ||
-              type == NotificationType.bonusRejected ||
-              type == NotificationType.bonusApproved ||
-              type == NotificationType.bonusRequested ||
-              type == NotificationType.bonusRequestApproved) {
-            final String? bonusId = notificationData['bonus_id'];
-            if (bonusId == null) return;
-            final bonusRef = _fs.collection('bonuses').doc(bonusId);
-            final data = {'bonus': null, 'bonusRef': bonusRef};
-            if (context.mounted) {
-              context.push('/bonus_detail', extra: data);
-            }
-          } else if (type == NotificationType.coinChange) {
-            context.push('/kid_coins', extra: _userCubit.state);
-          } else if (type == NotificationType.chat) {
-            final String? chatId = notificationData['chat_id'];
-            if (chatId == null) return;
-            final chatRef = _fs.collection('chats').doc(chatId);
-            context.push('/chat_room', extra: chatRef);
-            return;
-          } else if (type == NotificationType.gift) {
-            context.go('/mentor_profile');
-            return;
-          } else {
-            return;
-          }
-        }
-
-        if (type == NotificationType.chat) {
-          final String? chatId = notificationData['chat_id'];
-          if (chatId == null) return;
-          if (_currentChatCubit.state == chatId) return;
-        }
-
-        if (type == NotificationType.gift) {
-          _userCubit.refreshProfile();
-        }
-
-        SnackBarSerive.showSnackBarOnReceivePushNotification(
-          notification.title ?? 'Notification',
-          notification.body,
-          onTap,
-        );
+  Future<void> _setupFCM(String userId, int generation) async {
+    await _cancelSubscriptions();
+    if (!_isCurrentSession(userId, generation)) return;
+    _delivered.clear();
+    _opened.clear();
+    _messageSubscription = FirebaseMessaging.onMessage.listen((message) {
+      if (_isCurrentSession(userId, generation)) {
+        _onForegroundMessage(message, userId, generation);
       }
     });
-
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      log('Message: ${message.messageId} TITLE: ${message.notification?.title}:  BODY: ${message.notification?.body} \n DATA: ${message.data}');
-      final notification = message.notification;
-      if (notification != null) {
-        bool alreadyView = isNotificationReceived(message.messageId ?? '');
-        if (alreadyView) {
-          log('Message already viewed: ${message.messageId}');
-          return;
-        }
-
-        final Map<String, dynamic> notificationData = message.data;
-        NotificationType type = notificationTypeFromString(notificationData['type']);
-
-        onTap() {
-          if (type == NotificationType.reminder ||
-              type == NotificationType.taskComplete ||
-              type == NotificationType.taskRework ||
-              type == NotificationType.taskCanceled ||
-              type == NotificationType.taskDeleted ||
-              type == NotificationType.taskCreated ||
-              type == NotificationType.taskReview) {
-            final String? taskId = notificationData['task_id'];
-            if (taskId == null) return;
-            final taskRef = _fs.collection('tasks').doc(taskId);
-            final data = {'task': null, 'taskRef': taskRef};
-            if (context.mounted) {
-              context.push('/task_detail', extra: data);
-            }
-          } else if (type == NotificationType.bonusCreated ||
-              type == NotificationType.bonusNeedApprove ||
-              type == NotificationType.bonusCanceled ||
-              type == NotificationType.bonusRejected ||
-              type == NotificationType.bonusApproved ||
-              type == NotificationType.bonusRequested ||
-              type == NotificationType.bonusRequestApproved) {
-            final String? bonusId = notificationData['bonus_id'];
-            if (bonusId == null) return;
-            final bonusRef = _fs.collection('bonuses').doc(bonusId);
-            final data = {'bonus': null, 'bonusRef': bonusRef};
-            if (context.mounted) {
-              context.push('/bonus_detail', extra: data);
-            }
-          } else if (type == NotificationType.coinChange) {
-            context.push('/kid_coins', extra: _userCubit.state);
-          } else if (type == NotificationType.chat) {
-            final String? chatId = notificationData['chat_id'];
-            if (chatId == null) return;
-            final chatRef = _fs.collection('chats').doc(chatId);
-            context.push('/chat_room', extra: chatRef);
-            return;
-          } else if (type == NotificationType.gift) {
-            context.go('/mentor_profile');
-            return;
-          } else {
-            return;
-          }
-        }
-
-        if (context.mounted) {
-          onTap();
-        }
-      }
+    _openedSubscription = FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      if (_isCurrentSession(userId, generation)) _openMessage(message);
+    });
+    _tokenSubscription = _fcm.onTokenRefresh.listen((token) {
+      unawaited(_setFCMToken(token, userId, generation));
+    }, onError: (Object error) {
+      log('FCM token refresh failed', error: error);
     });
 
-    FirebaseMessaging.instance.getInitialMessage().then((message) async {
-      if (!context.mounted) return;
-      if (message == null) return;
+    try {
+      await _fcm.requestPermission(alert: true, badge: true, sound: true);
+      if (!_isCurrentSession(userId, generation)) return;
+      await _setFCMToken(await _fcm.getToken(), userId, generation);
+    } catch (error) {
+      // Notification permission/token failures must not break the app shell.
+      log('FCM setup failed', error: error);
+    }
+    if (!_isCurrentSession(userId, generation)) return;
 
-      final Map<String, dynamic> notificationData = message.data;
-      NotificationType type = notificationTypeFromString(notificationData['type']);
-
-      onTap() {
-        if (type == NotificationType.reminder ||
-            type == NotificationType.taskComplete ||
-            type == NotificationType.taskRework ||
-            type == NotificationType.taskCanceled ||
-            type == NotificationType.taskDeleted ||
-            type == NotificationType.taskCreated ||
-            type == NotificationType.taskReview) {
-          final String? taskId = notificationData['task_id'];
-          if (taskId == null) return;
-          final taskRef = _fs.collection('tasks').doc(taskId);
-          final data = {'task': null, 'taskRef': taskRef};
-          if (context.mounted) {
-            context.push('/task_detail', extra: data);
-          }
-        } else if (type == NotificationType.bonusCreated ||
-            type == NotificationType.bonusNeedApprove ||
-            type == NotificationType.bonusCanceled ||
-            type == NotificationType.bonusRejected ||
-            type == NotificationType.bonusApproved ||
-            type == NotificationType.bonusRequested ||
-            type == NotificationType.bonusRequestApproved) {
-          final String? bonusId = notificationData['bonus_id'];
-          if (bonusId == null) return;
-          final bonusRef = _fs.collection('bonuses').doc(bonusId);
-          final data = {'bonus': null, 'bonusRef': bonusRef};
-          if (context.mounted) {
-            context.push('/bonus_detail', extra: data);
-          }
-        } else if (type == NotificationType.coinChange) {
-          context.push('/kid_coins', extra: _userCubit.state);
-        } else if (type == NotificationType.chat) {
-          final String? chatId = notificationData['chat_id'];
-          if (chatId == null) return;
-          final chatRef = _fs.collection('chats').doc(chatId);
-          context.push('/chat_room', extra: chatRef);
-          return;
-        } else if (type == NotificationType.gift) {
-          context.go('/mentor_profile');
-          return;
-        } else {
-          return;
+    if (!_readInitialMessage) {
+      try {
+        final message = await _fcm.getInitialMessage();
+        _readInitialMessage = true;
+        if (message != null && _isCurrentSession(userId, generation)) {
+          _openMessage(message);
         }
+      } catch (error) {
+        log('FCM initial message failed', error: error);
       }
+    }
 
-      if (context.mounted) {
-        onTap();
+    if (!kIsWeb && _isCurrentSession(userId, generation) && _userCubit.state?.isKid == true) {
+      try {
+        await _localPush.setDailyDiaryReminder(_userCubit.state?.dairyNotification ?? true);
+      } catch (error) {
+        log('Diary notification setup failed', error: error);
       }
-    });
-
-    if (_userCubit.state?.isKid == true) {
-      _localPush.setDailyDiaryReminder(_userCubit.state?.dairyNotification ?? true);
     }
   }
 
-  bool isNotificationReceived(String id) => receivedNotificationIds.contains(id);
+  void _onForegroundMessage(RemoteMessage message, String userId, int generation) {
+    final notification = message.notification;
+    if (notification == null || !_delivered.accept(message.messageId)) return;
+    final type = notificationTypeFromString(message.data['type']);
+    if (type == NotificationType.chat && _currentChatCubit.state == message.data['chat_id']) {
+      return;
+    }
+    if (type == NotificationType.gift) {
+      unawaited(_refreshProfile());
+    }
+    SnackBarSerive.showSnackBarOnReceivePushNotification(
+      notification.title ?? 'Notification',
+      notification.body,
+      () {
+        // A toast from a previous login must not open data in the next session.
+        if (_isCurrentSession(userId, generation)) _openMessage(message);
+      },
+    );
+  }
 
-  Future<void> _setFCMToken(String? token) async {
-    if (token == null) return;
-    await _userCubit.state?.ref.update({'fcm_token': token});
+  Future<void> _refreshProfile() async {
+    try {
+      await _userCubit.refreshProfile();
+    } catch (error) {
+      log('Profile refresh after notification failed', error: error);
+    }
+  }
+
+  void _openMessage(RemoteMessage message) {
+    final user = _userCubit.state;
+    if (user == null || navigatorKey.currentState == null) return;
+    final data = message.data;
+    final type = notificationTypeFromString(data['type']);
+    final taskTypes = {
+      NotificationType.reminder,
+      NotificationType.taskComplete,
+      NotificationType.taskRework,
+      NotificationType.taskCanceled,
+      NotificationType.taskDeleted,
+      NotificationType.taskCreated,
+      NotificationType.taskReview,
+    };
+    final bonusTypes = {
+      NotificationType.bonusCreated,
+      NotificationType.bonusNeedApprove,
+      NotificationType.bonusCanceled,
+      NotificationType.bonusRejected,
+      NotificationType.bonusApproved,
+      NotificationType.bonusRequested,
+      NotificationType.bonusRequestApproved,
+    };
+    // Receiving a foreground notification and opening it are separate events.
+    if (!_opened.accept(message.messageId)) return;
+    if (taskTypes.contains(type)) {
+      final id = data['task_id'];
+      if (id is! String || id.isEmpty || id.contains('/')) return;
+      router.push('/task_detail', extra: {'task': null, 'taskRef': _fs.collection('tasks').doc(id)});
+    } else if (bonusTypes.contains(type)) {
+      final id = data['bonus_id'];
+      if (id is! String || id.isEmpty || id.contains('/')) return;
+      router.push('/bonus_detail', extra: {'bonus': null, 'bonusRef': _fs.collection('bonuses').doc(id)});
+    } else if (type == NotificationType.coinChange) {
+      router.push('/kid_coins', extra: user);
+    } else if (type == NotificationType.chat) {
+      final id = data['chat_id'];
+      if (id is! String || id.isEmpty || id.contains('/')) return;
+      router.push('/chat_room', extra: _fs.collection('chats').doc(id));
+    } else if (type == NotificationType.gift) {
+      router.go(user.isKid ? '/kid_profile' : '/mentor_profile');
+    }
+  }
+
+  Future<void> stop() async {
+    ++_sessionGeneration;
+    _activeUserId = null;
+    _setupFuture = null;
+    _delivered.clear();
+    _opened.clear();
+    await _cancelSubscriptions();
+  }
+
+  Future<void> _cancelSubscriptions() async {
+    final message = _messageSubscription;
+    final opened = _openedSubscription;
+    final token = _tokenSubscription;
+    _messageSubscription = null;
+    _openedSubscription = null;
+    _tokenSubscription = null;
+    await Future.wait([
+      if (message != null) message.cancel(),
+      if (opened != null) opened.cancel(),
+      if (token != null) token.cancel(),
+    ]);
+  }
+
+  Future<void> _setFCMToken(String? token, String userId, int generation) async {
+    if (token == null || !_isCurrentSession(userId, generation)) return;
+    try {
+      await _userCubit.state?.ref.update({'fcm_token': token});
+    } catch (error) {
+      log('Saving FCM token failed', error: error);
+    }
   }
 
   //Пуш ребенку, когда ментор подтверждает выполнение
@@ -271,7 +228,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskComplete, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskComplete} error: $e');
     }
@@ -297,7 +254,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskRework, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskComplete} error: $e');
     }
@@ -323,7 +280,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskCanceled, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskComplete} error: $e');
     }
@@ -349,7 +306,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskDeleted, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskComplete} error: $e');
     }
@@ -369,7 +326,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskCreated, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskCreated} error: $e');
     }
@@ -395,7 +352,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.taskReview, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToMentorOnTaskSentToReview} error: $e');
     }
@@ -415,7 +372,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.coinChange, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnTaskCreated} error: $e');
     }
@@ -437,7 +394,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusCreated, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnBonusCreated} error: $e');
     }
@@ -458,7 +415,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusNeedApprove, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToMentorOnBonusNeedApprove} error: $e');
     }
@@ -478,7 +435,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusCanceled, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnBonusCanceled} error: $e');
     }
@@ -498,7 +455,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusRejected, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnBonusRejected} error: $e');
     }
@@ -518,7 +475,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusApproved, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnBonusApproved} error: $e');
     }
@@ -538,7 +495,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusRequestApproved, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToKidOnBonusRequestApproved} error: $e');
     }
@@ -559,7 +516,7 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.bonusRequested, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToMentorOnBonusRequested} error: $e');
     }
@@ -575,7 +532,7 @@ class FirebaseMessaginService {
     };
 
     try {
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToChatMember} error: $e');
     }
@@ -590,13 +547,13 @@ class FirebaseMessaginService {
     try {
       await _createSystemNotificationDoc(receiver, title, body, NotificationType.gift, payload);
 
-      _callSendPushCallback(receiver.id, title, body, payload);
+      await _callSendPushCallback(receiver.id, title, body, payload);
     } catch (e) {
       print('{sendPushToMentorForGift} error: $e');
     }
   }
 
-  void _callSendPushCallback(String userId, String title, String body, Map payload) async {
+  Future<void> _callSendPushCallback(String userId, String title, String body, Map payload) async {
     try {
       final cf.HttpsCallable callable = _functions.httpsCallable('sendPushNotificationToUser');
       final response = await callable.call(<String, dynamic>{
@@ -633,10 +590,3 @@ class FirebaseMessaginService {
     await notificationRef.set(notificationData);
   }
 }
-
-
-//  Message: 0:1753783382232457%a1133c67a1133c67 TITLE: Время выполнить задание::  BODY: "Будет увед в 12 10" 
-//        DATA: {task_id: UQzZuZXND0lf6Lng6x5D, type: reminder}
-
-// Message: 0:1753852724489856%a1133c67a1133c67 TITLE: Новое задание:  BODY: Наставник добавил тебе задание: "Только для теста " 
-//        DATA: {task_id: T1N8hkvpu53Au5BxZ8ZY, type: taskCreated}

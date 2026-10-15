@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:child_tracker/index.dart';
+import 'package:child_tracker/shared/services/balance_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:equatable/equatable.dart';
 
@@ -24,10 +25,26 @@ class TaskCubit extends Cubit<TaskState> {
         super(TaskState(currentDay: DateTime.now()));
 
   StreamSubscription? _taskStreamSubscription;
+  int _subscriptionGeneration = 0;
+  int _sessionGeneration = 0;
 
-  void init() {
+  bool Function() _operationGuard() {
+    final generation = _sessionGeneration;
+    final userId = _userCubit.state?.id;
+    return () => !isClosed && generation == _sessionGeneration && userId != null && _userCubit.state?.id == userId;
+  }
+
+  Future<void> init() async {
+    final generation = ++_subscriptionGeneration;
+    final previous = _taskStreamSubscription;
+    _taskStreamSubscription = null;
+    await previous?.cancel();
+    if (isClosed || generation != _subscriptionGeneration) return;
     final me = _userCubit.state;
-    if (me == null) return;
+    if (me == null) {
+      emit(state.reset());
+      return;
+    }
     emit(state.copyWith(status: TaskStateStatus.loading));
 
     late Query query;
@@ -56,15 +73,26 @@ class TaskCubit extends Cubit<TaskState> {
       }
     }
 
-    _taskStreamSubscription = query.snapshots().listen((event) {
-      final tasks = event.docs.map((e) => TaskModel.fromFirestore(e)).toList();
-      emit(state.copyWith(tasks: tasks, status: TaskStateStatus.success));
-    })
-      ..onError(
-        (_, e) {
-          emit(state.copyWith(errorMessage: e.toString(), status: TaskStateStatus.error));
-        },
-      );
+    _taskStreamSubscription = query.snapshots().listen(
+      (event) {
+        if (isClosed || generation != _subscriptionGeneration) return;
+        final tasks = event.docs.map((e) => TaskModel.fromFirestore(e)).toList();
+        emit(state.copyWith(tasks: tasks, status: TaskStateStatus.success));
+      },
+      onError: (Object error) {
+        if (isClosed || generation != _subscriptionGeneration) return;
+        emit(state.copyWith(errorMessage: error.toString(), status: TaskStateStatus.error));
+      },
+    );
+  }
+
+  Future<void> reset() async {
+    ++_sessionGeneration;
+    ++_subscriptionGeneration;
+    final previous = _taskStreamSubscription;
+    _taskStreamSubscription = null;
+    if (!isClosed) emit(state.reset());
+    await previous?.cancel();
   }
 
   void onKidSelected(UserModel? kid) {
@@ -93,14 +121,20 @@ class TaskCubit extends Cubit<TaskState> {
     emit(state.copyWith(currentDay: date));
   }
 
-  void cancelTask(TaskModel task, String? reason) async {
+  Future<void> cancelTask(TaskModel task, String? reason) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: TaskStateStatus.canceling));
     try {
-      await task.ref.update({
-        'status': TaskStatus.canceled.name,
-        'cancel_reason': reason,
-        'action_date': FieldValue.serverTimestamp(),
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.canceled.name,
+            'cancel_reason': reason,
+            'action_date': FieldValue.serverTimestamp(),
+          },
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner cancel task
@@ -109,14 +143,18 @@ class TaskCubit extends Cubit<TaskState> {
 
       emit(state.copyWith(status: TaskStateStatus.cancelSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {cancelTask}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.cancelError, errorMessage: e.toString()));
     }
   }
 
   Future<bool> deleteTask(TaskModel task) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return false;
     try {
-      await task.ref.update({'status': TaskStatus.deleted.name});
+      await _updateStatus(task, {'status': TaskStatus.deleted.name}, isCurrent: isCurrent);
+      if (!isCurrent()) return false;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner cancel task
@@ -125,6 +163,7 @@ class TaskCubit extends Cubit<TaskState> {
 
       return true;
     } catch (e) {
+      if (!isCurrent()) return false;
       print('error: {deleteTask}: ${e.toString()}');
       return false;
     }
@@ -132,193 +171,234 @@ class TaskCubit extends Cubit<TaskState> {
 
   //Когда ребенок завершает собственную задачу
   Future<bool> completeTask(TaskModel task) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return false;
     try {
-      await task.ref.update({
-        'status': TaskStatus.completed.name,
-        'action_date': FieldValue.serverTimestamp(),
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.completed.name,
+            'action_date': FieldValue.serverTimestamp(),
+          },
+          isCurrent: isCurrent);
+      if (!isCurrent()) return false;
       return true;
     } catch (e) {
+      if (!isCurrent()) return false;
       print('error: {completeTask}: ${e.toString()}');
       return false;
     }
   }
 
   Future<void> completeByKid(TaskModel task, String? comment, List<XFile> files) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: TaskStateStatus.kidCompleting));
 
-    if (comment != null || files.isNotEmpty) {
-      final Map<String, dynamic> dialogDoc = {
-        "comment": comment,
-        "user": _userCubit.state?.ref,
-        "time": FieldValue.serverTimestamp(),
-      };
+    try {
+      Map<String, dynamic>? dialogDoc;
+      if (comment != null || files.isNotEmpty) {
+        dialogDoc = {
+          "comment": comment,
+          "user": _userCubit.state?.ref,
+          "time": FieldValue.serverTimestamp(),
+        };
 
-      if (files.isNotEmpty) {
-        final uploadService = FirebaseStorageService();
-        final List<String> urls = [];
+        if (files.isNotEmpty) {
+          final uploadService = FirebaseStorageService();
+          final List<String> urls = [];
 
-        for (final file in files) {
-          final photoUrl = await uploadService.uploadFile(file: file, type: UploadType.task, uid: task.id);
-          if (photoUrl == null) {
-            emit(state.copyWith(status: TaskStateStatus.kidCompletingError));
-            return;
-          } else {
-            urls.add(photoUrl);
+          for (final file in files) {
+            final photoUrl = await uploadService.uploadFile(file: file, type: UploadType.task, uid: task.id);
+            if (!isCurrent()) return;
+            if (photoUrl == null) {
+              emit(state.copyWith(status: TaskStateStatus.kidCompletingError));
+              return;
+            } else {
+              urls.add(photoUrl);
+            }
           }
-        }
 
-        dialogDoc['files'] = urls;
+          dialogDoc['files'] = urls;
+        }
       }
 
-      final dialogRef = task.ref.collection('dialogs').doc();
-      await dialogRef.set(dialogDoc);
-    }
-
-    try {
-      await task.ref.update({
-        'status': TaskStatus.onReview.name,
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.onReview.name,
+          },
+          dialogDoc: dialogDoc,
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       _fcm.sendPushToMentorOnTaskSentToReview(task);
 
       emit(state.copyWith(status: TaskStateStatus.kidCompletingSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {completeByKid}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.kidCompletingError));
     }
   }
 
   Future<void> completeByKidSkip(TaskModel task) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: TaskStateStatus.kidCompletingSkip));
 
     try {
-      await task.ref.update({
-        'status': TaskStatus.onReview.name,
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.onReview.name,
+          },
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       _fcm.sendPushToMentorOnTaskSentToReview(task);
 
       emit(state.copyWith(status: TaskStateStatus.kidCompletingSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {completeByKid}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.kidCompletingError));
     }
   }
 
   Future<void> reworkByMentor(TaskModel task, String? comment, List<XFile> files) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: TaskStateStatus.mentorSendRework));
 
-    if (comment != null || files.isNotEmpty) {
-      final Map<String, dynamic> dialogDoc = {
-        "comment": comment,
-        "user": _userCubit.state?.ref,
-        "time": FieldValue.serverTimestamp(),
-      };
+    try {
+      Map<String, dynamic>? dialogDoc;
+      if (comment != null || files.isNotEmpty) {
+        dialogDoc = {
+          "comment": comment,
+          "user": _userCubit.state?.ref,
+          "time": FieldValue.serverTimestamp(),
+        };
 
-      if (files.isNotEmpty) {
-        final uploadService = FirebaseStorageService();
-        final List<String> urls = [];
+        if (files.isNotEmpty) {
+          final uploadService = FirebaseStorageService();
+          final List<String> urls = [];
 
-        for (final file in files) {
-          final photoUrl = await uploadService.uploadFile(file: file, type: UploadType.task, uid: task.id);
-          if (photoUrl == null) {
-            emit(state.copyWith(status: TaskStateStatus.mentorSendReworkError));
-            return;
-          } else {
-            urls.add(photoUrl);
+          for (final file in files) {
+            final photoUrl = await uploadService.uploadFile(file: file, type: UploadType.task, uid: task.id);
+            if (!isCurrent()) return;
+            if (photoUrl == null) {
+              emit(state.copyWith(status: TaskStateStatus.mentorSendReworkError));
+              return;
+            } else {
+              urls.add(photoUrl);
+            }
           }
-        }
 
-        dialogDoc['files'] = urls;
+          dialogDoc['files'] = urls;
+        }
       }
 
-      final dialogRef = task.ref.collection('dialogs').doc();
-      await dialogRef.set(dialogDoc);
-    }
-
-    try {
-      await task.ref.update({
-        'status': TaskStatus.needsRework.name,
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.needsRework.name,
+          },
+          dialogDoc: dialogDoc,
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       _fcm.sendPushToKidOnTaskRework(task);
 
       emit(state.copyWith(status: TaskStateStatus.mentorSendReworkSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {reworkByMentor}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.mentorSendReworkError));
     }
   }
 
   Future<void> reworkByMentorSkip(TaskModel task) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: TaskStateStatus.mentorSendReworkSkip));
 
     try {
-      await task.ref.update({
-        'status': TaskStatus.needsRework.name,
-      });
+      await _updateStatus(
+          task,
+          {
+            'status': TaskStatus.needsRework.name,
+          },
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       _fcm.sendPushToKidOnTaskRework(task);
 
       emit(state.copyWith(status: TaskStateStatus.mentorSendReworkSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {reworkByMentorSkip}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.mentorSendReworkError));
     }
   }
 
   Future<void> completeByMentor(TaskModel task) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
+    final user = _userCubit.state;
     emit(state.copyWith(status: TaskStateStatus.mentorCompleting));
 
     try {
+      if (user == null || user.isKid) throw StateError('Наставник не найден.');
       if (task.kid != null) {
         final taskKid = await _userCubit.getUserByRef(task.kid!);
+        if (!isCurrent()) return;
         emit(state.copyWith(currentTaskKid: taskKid));
       }
 
-      await task.ref.update({
-        'status': TaskStatus.completed.name,
-        'action_date': FieldValue.serverTimestamp(),
-      });
+      final result = await BalanceService(_fs).completeTask(task.id, user.id);
+      if (!isCurrent()) return;
+      if (result.changed) _fcm.sendPushToKidOnTaskComplete(task);
 
-      await _onAddPointToKid(task);
-
-      _fcm.sendPushToKidOnTaskComplete(task);
-
+      if (!isCurrent()) return;
       emit(state.copyWith(status: TaskStateStatus.mentorCompletingSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {completeByMentor}: ${e.toString()}');
       emit(state.copyWith(status: TaskStateStatus.mentorCompletingError));
     }
   }
 
-  Future<void> _onAddPointToKid(TaskModel task) async {
-    final point = task.coin ?? 0;
-    try {
-      await task.kid?.update({
-        'points': FieldValue.increment(point),
-      });
-
-      final doc = {
-        'kid': task.kid,
-        'mentor': task.owner,
-        'created_at': FieldValue.serverTimestamp(),
-        'coin': point,
-        'name': 'Выполнение задания: ${task.name}',
-      };
-
-      final ref = CoinChangeModel.collection.doc();
-      await ref.set(doc);
-    } catch (e) {
-      print('error: {_onAddPointToKid}: ${e.toString()}');
-      rethrow;
-    }
+  Future<void> _updateStatus(
+    TaskModel task,
+    Map<String, dynamic> update, {
+    required bool Function() isCurrent,
+    Map<String, dynamic>? dialogDoc,
+  }) async {
+    if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+    final ref = _fs.collection('tasks').doc(task.id);
+    final dialogRef = dialogDoc == null ? null : ref.collection('dialogs').doc();
+    await _fs.runTransaction((transaction) async {
+      if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+      final snapshot = await transaction.get(ref);
+      if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+      final data = snapshot.data();
+      if (data == null) throw StateError('Задание не найдено.');
+      final current = data['status'];
+      if (current == update['status']) return;
+      if (current == TaskStatus.completed.name || current == TaskStatus.deleted.name) {
+        throw StateError('Задание уже завершено или удалено.');
+      }
+      // Stale screens must not overwrite a newer review/cancel decision.
+      if (current != task.status?.name) throw StateError('Задание уже изменено. Обновите страницу.');
+      transaction.update(ref, update);
+      if (dialogRef != null && dialogDoc != null) transaction.set(dialogRef, dialogDoc);
+    });
   }
 
   @override
-  Future<void> close() {
-    _taskStreamSubscription?.cancel();
-    return super.close();
+  Future<void> close() async {
+    await reset();
+    await super.close();
   }
 }

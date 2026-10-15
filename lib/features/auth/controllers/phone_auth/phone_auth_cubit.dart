@@ -5,10 +5,6 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:dio/dio.dart';
-import 'package:crypto/crypto.dart';
-import 'dart:convert';
-import 'package:uuid/uuid.dart';
 
 part 'state.dart';
 
@@ -30,85 +26,38 @@ class PhoneAuthCubit extends Cubit<PhoneAuthState> {
         super(PhoneAuthInitial());
 
   Future<void> sendCode(String phone, {bool isResend = false}) async {
-    print('send code phone: $phone');
+    if (state is PhoneAuthLoading) return;
     emit(PhoneAuthLoading());
     try {
-      final HttpsCallable callable = _ff.httpsCallable('sendCodeDev', options: HttpsCallableOptions());
+      final HttpsCallable callable = _ff.httpsCallable('sendCodeSecure');
       final Map<String, dynamic> dataToSend = {'phone': phone};
-      print('Data being sent to Firebase Function: $dataToSend');
       final HttpsCallableResult result = await callable.call(dataToSend);
-      print('Result: ${result.data}');
-      final code = result.data['code'];
-      
-      try {
-        final configDoc = await _fs.collection('config').doc('sms_settings').get();
-        if (configDoc.exists) {
-          final login = configDoc.data()?['login'];
-          final apiKey = configDoc.data()?['api_key'];
-          
-          if (login != null && apiKey != null) {
-            final ts = const Uuid().v4();
-            final secret = md5.convert(utf8.encode(ts + apiKey)).toString();
-            
-            final dio = Dio();
-            dio.options.headers['login'] = login;
-            dio.options.headers['ts'] = ts;
-            dio.options.headers['secret'] = secret;
-            
-            final response = await dio.post(
-              'https://cp.redsms.ru/api/message',
-              data: {
-                'from': 'FamilyCult',
-                'to': phone,
-                'text': 'Код для входа в приложение KidsCult: $code',
-                'route': 'sms',
-              },
-            );
-            print('SMS successfully sent via RedSMS. Response: ${response.data}');
-          } else {
-            print('RedSMS config missing login or api_key');
-          }
-        } else {
-          print('RedSMS config doc not found');
-        }
-      } on DioException catch (e) {
-        print('RedSMS DioError: ${e.response?.data ?? e.message}');
-      } catch (e) {
-        print('RedSMS Error: $e');
+      if (result.data is! Map || result.data['sent'] != true) {
+        throw StateError('SMS was not accepted for delivery');
       }
-
+      if (isClosed) return;
       if (isResend) {
-        emit(PhoneAuthResendOTPSuccess(code: code));
+        emit(PhoneAuthResendOTPSuccess());
       } else {
-        emit(PhoneAuthCodeSentSuccess(code: code));
+        emit(PhoneAuthCodeSentSuccess());
       }
     } on FirebaseFunctionsException catch (e) {
-      print('Firebase Functions Error: ${e.code} - ${e.message} - ${e.details}');
-      String message = e.message == 'Failed to send code due to an internal server error.'
-          ? 'cantSendToPhone'.tr()
-          : e.message == 'Wait before requesting another code.'
-              ? 'waitForResend'.tr()
-              : e.message ?? e.code;
-      
-      if (e.message == 'Wait before requesting another code.' && !isResend) {
-        emit(PhoneAuthCodeSentSuccess(code: ''));
-      } else {
-        emit(PhoneAuthFailure(errorMessage: message));
-      }
-    } catch (e) {
-      print('Error {sendCode}: $e');
-      emit(PhoneAuthFailure(errorMessage: e.toString()));
+      if (isClosed) return;
+      // A quota error does not mean a usable SMS was sent.
+      emit(PhoneAuthFailure(
+          errorMessage: e.code == 'resource-exhausted' ? 'waitForResend'.tr() : 'cantSendToPhone'.tr()));
+    } catch (_) {
+      if (!isClosed) emit(PhoneAuthFailure(errorMessage: 'cantSendToPhone'.tr()));
     }
   }
 
   Future<void> verifyOTP(String phone, String otp) async {
+    if (state is PhoneAuthLoading) return;
     emit(PhoneAuthLoading());
     try {
-      final HttpsCallable callable = _ff.httpsCallable('verifyCode', options: HttpsCallableOptions());
+      final HttpsCallable callable = _ff.httpsCallable('verifyCodeSecure');
       final Map<String, dynamic> dataToSend = {'phone': phone, 'code': otp};
-      print('Data being sent to Firebase Function: $dataToSend');
       final HttpsCallableResult result = await callable.call(dataToSend);
-      print('Result: ${result.data}');
 
       final String? token = result.data['token'];
 
@@ -117,14 +66,19 @@ class PhoneAuthCubit extends Cubit<PhoneAuthState> {
         return;
       }
 
-      _signInWithCredential(token, phone);
+      await _signInWithCredential(token, phone);
     } on FirebaseFunctionsException catch (e) {
-      print('Firebase Functions Error: ${e.code} - ${e.message} - ${e.details}');
-      String message = e.message == 'Invalid code provided.' ? 'invalidCode'.tr() : e.message ?? e.code;
+      if (isClosed) return;
+      final message = e.code == 'permission-denied'
+          ? 'userBanned'.tr()
+          : e.code == 'resource-exhausted'
+              ? 'waitForResend'.tr()
+              : e.code == 'invalid-argument' || e.code == 'unauthenticated'
+                  ? 'invalidCode'.tr()
+                  : 'errorSigningIn'.tr();
       emit(PhoneAuthFailure(errorMessage: message));
-    } catch (e) {
-      print('Error {verifyOTP}: $e');
-      emit(PhoneAuthFailure(errorMessage: e.toString()));
+    } catch (_) {
+      if (!isClosed) emit(PhoneAuthFailure(errorMessage: 'errorSigningIn'.tr()));
     }
   }
 
@@ -141,19 +95,22 @@ class PhoneAuthCubit extends Cubit<PhoneAuthState> {
 
           final userModel = UserModel.fromFirestore(userData);
           if (userModel.banned) {
+            await _auth.signOut();
+            _userCubit.setUser(null);
             emit(PhoneAuthFailure(errorMessage: 'userBanned'.tr()));
             return;
           } else if (!userModel.profileFilled) {
+            _userCubit.setUser(userModel);
             emit(PhoneAuthSuccessRedirect());
             return;
           } else {
-            emit(PhoneAuthSuccess(type: (userModel.userType ?? UserType.kid).name));
             _userCubit.setUser(userModel);
+            emit(PhoneAuthSuccess(type: (userModel.userType ?? UserType.kid).name));
             return;
           }
         } else {
-          print('Create new User');
           await _createNewUser(userCredential.user!, phone);
+          await _userCubit.getAndSet(userCredential.user!);
           emit(PhoneAuthSuccessRedirect());
         }
       } else {

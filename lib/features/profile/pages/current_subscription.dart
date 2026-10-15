@@ -1,7 +1,5 @@
 // ignore_for_file: deprecated_member_use
 
-import 'dart:io';
-
 import 'package:child_tracker/index.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:easy_localization/easy_localization.dart';
@@ -22,13 +20,6 @@ class CurrentSubscriptionScreen extends StatefulWidget {
 
 class _CurrentSubscriptionScreenState extends State<CurrentSubscriptionScreen> {
   bool loading = false;
-  late InAppPurchasesProvider _provider;
-
-  @override
-  void initState() {
-    super.initState();
-    _provider = InAppPurchasesProvider();
-  }
 
   void onTapPurchase(UserModel me) async {
     final SubscriptionModel? selectedPlan = await context.push('/select_plan');
@@ -42,29 +33,13 @@ class _CurrentSubscriptionScreenState extends State<CurrentSubscriptionScreen> {
         final isIos = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS && me.id == 'phone_99364424525';
 
         if (isIos) {
-          final result = await _provider.buySubs(selectedPlan.appleId);
-          if (result && mounted) {
-            final Map orderDoc = {
-              "is_gift": false,
-              "tariff": selectedPlan.ref,
-              "paid": false,
-              "price": selectedPlan.price,
-              "user": me.ref,
-            };
-            await context.read<UserCubit>().onPurchasePlan(orderDoc);
-            bool isGift = orderDoc['is_gift'] ?? false;
-            if (isGift && mounted) {
-              final receiver = await context.read<UserCubit>().getUserByRef(orderDoc['user']);
-              if (mounted) context.replace('/payment_success', extra: receiver.name);
-            } else {
-              if (mounted) context.replace('/payment_success');
-            }
-          }
+          // buySubs only opens the store sheet; it is not a verified purchase.
+          // Do not charge this demo flow until server-side Apple verification exists.
+          throw StateError('Оплата через App Store временно недоступна.');
         } else {
           final service = sl<PaymentService>();
           final Map? data = await service.createPayment(tariff: selectedPlan);
 
-          print('Payment data: $data');
           if (data != null && mounted) {
             setState(() {
               loading = false;
@@ -86,19 +61,17 @@ class _CurrentSubscriptionScreenState extends State<CurrentSubscriptionScreen> {
 
   void onTapGifts() async {
     final SubscriptionModel? selectedPlan = await context.push('/select_plan');
-    print('selectedPlan: ${selectedPlan?.id}');
     if (selectedPlan != null && mounted) {
       final UserModel? selectedUser = await context.push('/select_user_for_gift');
-      print('selectedUser: ${selectedUser?.name}');
+      if (selectedUser == null || !mounted) return;
       try {
         setState(() {
           loading = true;
         });
 
         final service = sl<PaymentService>();
-        final Map? data = await service.sendGift(tariff: selectedPlan, user: selectedUser!);
+        final Map? data = await service.sendGift(tariff: selectedPlan, user: selectedUser);
 
-        print('Payment data: $data');
         if (data != null && mounted) {
           setState(() {
             loading = false;
@@ -125,15 +98,11 @@ class _CurrentSubscriptionScreenState extends State<CurrentSubscriptionScreen> {
       final service = sl<PaymentService>();
 
       final selectedPlan = await service.getTariffByRef(order['tariff']);
-      late UserModel selectedUser;
-
-      if (mounted) {
-        selectedUser = await context.read<UserCubit>().getUserByRef(order['user']);
-      }
+      if (!mounted) return;
+      final selectedUser = await context.read<UserCubit>().getUserByRef(order['user']);
 
       final Map? data = await service.sendGift(tariff: selectedPlan, user: selectedUser);
 
-      print('Payment data: $data');
       if (data != null && mounted) {
         setState(() {
           loading = false;
@@ -355,7 +324,7 @@ class _CurrentSubscriptionScreenState extends State<CurrentSubscriptionScreen> {
                     if (hasSubscription) const SizedBox(height: 24),
                     FilledAppButton(
                       text: 'subscribe'.tr(),
-                      onTap:()=> onTapPurchase(me),
+                      onTap: () => onTapPurchase(me),
                     ),
                     const SizedBox(height: 24),
                     FilledSecondaryAppButton(

@@ -1,16 +1,45 @@
-# child_tracker
+# KidsCult / FamilyCult
 
-A new Flutter project.
+Flutter-приложение для ребёнка и наставника: задания, баллы, бонусы, чат,
+дневник, игры и подписки. Состояние — Cubit/BLoC, навигация — GoRouter,
+данные — Firebase Auth / Firestore / Storage / Cloud Functions.
 
-## Getting Started
+## Локальные проверки
 
-This project is a starting point for a Flutter application.
+Из этой директории, с установленным Flutter SDK и зависимостями:
 
-A few resources to get you started if this is your first Flutter project:
+```sh
+flutter pub get
+flutter analyze
+flutter test
+node --test functions/tests/*.test.cjs functions/initialPayment_function-source/payment.test.js
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Node.js 20+ нужен для серверных тестов. Двойники Firestore и платёжного шлюза
+не отправляют SMS, не списывают деньги и не обращаются к рабочей базе.
+Flutter- и серверные unit-тесты не требуют новых зависимостей приложения.
+Проверки Security Rules находятся отдельно в `security`: у них собственные
+тестовые зависимости Firebase Emulator Suite и инструкция запуска.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Запуск и выпуск
+
+Нативные Firebase-конфигурации находятся в `android/app/google-services.json`
+и `ios/Runner/GoogleService-Info.plist`. Web App ID в `lib/main.dart` пока является
+заглушкой: перед проверкой web получить действительную конфигурацию Web App
+в Firebase Console. Публичный hosting init.json проекта не содержит appId.
+
+**Новый клиент требует согласованного обновления сервера и правил Firebase.**
+Он вызывает `sendCodeSecure` / `verifyCodeSecure` и больше не отправляет SMS
+или не выдаёт подписку на устройстве. Выпуск одного клиента со старым сервером
+нарушит вход и оплату.
+
+Порядок настройки и ограничения: [план выпуска](docs/HARDENING_ROLLOUT.md).
+Платёжная интеграция: [описание и проверки](functions/PAYMENTS.md).
+Переходные правила для старого клиента: [ограничения и порядок применения](security/README.md).
+Они не являются окончательной защитой: сохраняют открытый SMS-конфиг и широкий
+доступ авторизованных пользователей ради совместимости до общего обновления.
+
+Две директории `functions/*_function-source` — копии серверных экспортов.
+Критические реализации синхронизированы и проверяются тестом. Для развёртывания
+выбрать одну исходную директорию в реальной конфигурации проекта; не публиковать
+обе как конкурирующие наборы функций.

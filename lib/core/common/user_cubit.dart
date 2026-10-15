@@ -11,15 +11,27 @@ class UserCubit extends Cubit<UserModel?> {
   })  : _fs = fs,
         super(null);
 
-  void setUser(UserModel? newUser) => emit(newUser);
+  int _sessionGeneration = 0;
+
+  void setUser(UserModel? newUser) {
+    // A clear invalidates pending work even when profile loading has not yet
+    // populated state. Logging back into the same UID starts a new session.
+    if (newUser == null || state?.id != newUser.id) ++_sessionGeneration;
+    emit(newUser);
+  }
+
+  bool _isCurrentSession(int generation, UserModel user) =>
+      !isClosed && generation == _sessionGeneration && state?.id == user.id;
 
   void getUser() {
     _fs.app;
   }
 
   Future<void> getAndSet(User user) async {
+    final generation = _sessionGeneration;
     try {
       final doc = await _fs.collection('users').doc(user.uid).get();
+      if (isClosed || generation != _sessionGeneration) return;
       final userModel = UserModel.fromFirestore(doc);
       setUser(userModel);
     } catch (e) {
@@ -28,37 +40,51 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<void> refreshProfile() async {
-    try {
-      final doc = await state!.ref.get();
-      final userModel = UserModel.fromFirestore(doc);
-      setUser(userModel);
-    } catch (e) {
-      rethrow;
-    }
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return;
+    final doc = await user.ref.get();
+    if (_isCurrentSession(generation, user)) setUser(UserModel.fromFirestore(doc));
   }
 
   Future<void> setNotification(bool value) async {
-    await state?.ref.update({'notification': value});
-    emit(state?.copyWith(notification: value));
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return;
+    await user.ref.update({'notification': value});
+    if (_isCurrentSession(generation, user)) emit(state!.copyWith(notification: value));
   }
 
   Future<void> setDairyNotification(bool value) async {
-    await state?.ref.update({'dairy_notification': value});
-    emit(state?.copyWith(dairyNotification: value));
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return;
+    await user.ref.update({'dairy_notification': value});
+    if (_isCurrentSession(generation, user)) emit(state!.copyWith(dairyNotification: value));
   }
 
   Future<void> addDairyMember(DocumentReference ref) async {
-    await state?.ref.update({
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return;
+    await user.ref.update({
       'dairy_members': FieldValue.arrayUnion([ref])
     });
-    emit(state?.copyWith(dairyMembers: List.from(state!.dairyMembers)..add(ref)));
+    if (_isCurrentSession(generation, user)) {
+      emit(state!.copyWith(dairyMembers: List.from(state!.dairyMembers)..add(ref)));
+    }
   }
 
   Future<void> deleteDairyMember(DocumentReference ref) async {
-    await state?.ref.update({
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return;
+    await user.ref.update({
       'dairy_members': FieldValue.arrayRemove([ref])
     });
-    emit(state?.copyWith(dairyMembers: List.from(state!.dairyMembers)..remove(ref)));
+    if (_isCurrentSession(generation, user)) {
+      emit(state!.copyWith(dairyMembers: List.from(state!.dairyMembers)..remove(ref)));
+    }
   }
 
   Future<void> onDeleteFcmToken() async {
@@ -66,8 +92,6 @@ class UserCubit extends Cubit<UserModel?> {
       await state?.ref.update({'fcm_token': null});
     } catch (e) {
       print('Error onDeleteFcmToken: $e');
-    } finally {
-      emit(null);
     }
   }
 
@@ -81,15 +105,21 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<bool> addRequestToConnection(DocumentReference kidRef) async {
-    if (state == null) return false;
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return false;
     try {
-      await state?.ref.update({
+      final batch = _fs.batch();
+      batch.update(user.ref, {
         'connection_requests': FieldValue.arrayUnion([kidRef])
       });
-      await kidRef.update({
-        'connection_requests': FieldValue.arrayUnion([state!.ref])
+      batch.update(kidRef, {
+        'connection_requests': FieldValue.arrayUnion([user.ref])
       });
-      emit(state!.copyWith(connectionRequests: List.from(state!.connectionRequests)..add(kidRef)));
+      await batch.commit();
+      if (_isCurrentSession(generation, user)) {
+        emit(state!.copyWith(connectionRequests: {...state!.connectionRequests, kidRef}.toList()));
+      }
       return true;
     } catch (e) {
       print('error: {addRequestToConnection}: ${e.toString()}');
@@ -98,15 +128,26 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<bool> acceptConnection(DocumentReference mentorRef) async {
-    if (state == null) return false;
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return false;
     try {
-      await state?.ref.update({
-        'connections': FieldValue.arrayUnion([mentorRef])
+      final batch = _fs.batch();
+      batch.update(user.ref, {
+        'connections': FieldValue.arrayUnion([mentorRef]),
+        'connection_requests': FieldValue.arrayRemove([mentorRef]),
       });
-      await mentorRef.update({
-        'connections': FieldValue.arrayUnion([state!.ref])
+      batch.update(mentorRef, {
+        'connections': FieldValue.arrayUnion([user.ref]),
+        'connection_requests': FieldValue.arrayRemove([user.ref]),
       });
-      emit(state!.copyWith(connections: List.from(state!.connections)..add(mentorRef)));
+      await batch.commit();
+      if (_isCurrentSession(generation, user)) {
+        emit(state!.copyWith(
+          connections: {...state!.connections, mentorRef}.toList(),
+          connectionRequests: List.from(state!.connectionRequests)..remove(mentorRef),
+        ));
+      }
       return true;
     } catch (e) {
       print('error: {acceptConnection}: ${e.toString()}');
@@ -115,20 +156,26 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<bool> deleteConnection(DocumentReference userRef) async {
-    if (state == null) return false;
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) return false;
     try {
-      await state?.ref.update({
+      final batch = _fs.batch();
+      batch.update(user.ref, {
         'connections': FieldValue.arrayRemove([userRef]),
         'connection_requests': FieldValue.arrayRemove([userRef])
       });
-      await userRef.update({
-        'connections': FieldValue.arrayRemove([state!.ref]),
-        'connection_requests': FieldValue.arrayRemove([state!.ref])
+      batch.update(userRef, {
+        'connections': FieldValue.arrayRemove([user.ref]),
+        'connection_requests': FieldValue.arrayRemove([user.ref])
       });
-      emit(state!.copyWith(
-        connections: List.from(state!.connections)..remove(userRef),
-        connectionRequests: List.from(state!.connectionRequests)..remove(userRef),
-      ));
+      await batch.commit();
+      if (_isCurrentSession(generation, user)) {
+        emit(state!.copyWith(
+          connections: List.from(state!.connections)..remove(userRef),
+          connectionRequests: List.from(state!.connectionRequests)..remove(userRef),
+        ));
+      }
       return true;
     } catch (e) {
       print('error: {acceptConnection}: ${e.toString()}');
@@ -137,15 +184,20 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<void> onChangePoint(int amount) async {
-    if (state == null) return;
-    try {
-      await state?.ref.update({'points': FieldValue.increment(amount)});
-
-      emit(state!.copyWith(
-        points: state!.points + amount,
-      ));
-    } catch (e) {
-      print('error: {onChangePoint}: ${e.toString()}');
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) throw StateError('Пользователь не найден.');
+    final points = await _fs.runTransaction((transaction) async {
+      final snapshot = await transaction.get(user.ref);
+      final data = snapshot.data() as Map<String, dynamic>?;
+      if (data == null) throw StateError('Пользователь не найден.');
+      final balance = (data['points'] as int? ?? 0) + amount;
+      if (balance < 0) throw StateError('Недостаточно баллов.');
+      transaction.update(user.ref, {'points': balance});
+      return balance;
+    });
+    if (_isCurrentSession(generation, user)) {
+      emit(state!.copyWith(points: points));
     }
   }
 
@@ -154,7 +206,11 @@ class UserCubit extends Cubit<UserModel?> {
     int points,
     DocumentReference? level,
   ) async {
-    await state?.userGamesCollection.add(newGameDoc);
+    final generation = _sessionGeneration;
+    final user = state;
+    if (user == null) throw StateError('Пользователь не найден.');
+    final batch = _fs.batch();
+    batch.set(user.userGamesCollection.doc(), newGameDoc);
 
     final newDoc = {
       'game_points': FieldValue.increment(points),
@@ -164,10 +220,12 @@ class UserCubit extends Cubit<UserModel?> {
       newDoc['completed_levels'] = FieldValue.arrayUnion([level]);
     }
 
-    await state?.ref.update(newDoc);
+    batch.update(user.ref, newDoc);
+    await batch.commit();
+    if (!_isCurrentSession(generation, user)) return;
 
-    final completedLevels = state?.completedLevels ?? [];
-    if (level != null) {
+    final completedLevels = List<DocumentReference>.from(state!.completedLevels);
+    if (level != null && !completedLevels.contains(level)) {
       completedLevels.add(level);
     }
 
@@ -178,85 +236,28 @@ class UserCubit extends Cubit<UserModel?> {
   }
 
   Future<void> onPurchasePlan(Map<dynamic, dynamic> orderDoc) async {
-    if (state == null) return;
-    try {
-      final DocumentReference planRef = orderDoc['tariff'];
-
-      bool isGift = orderDoc['is_gift'] ?? false;
-      if (isGift) {
-        final reciver = await getUserByRef(orderDoc['user']);
-
-        late DateTime newPlanExpired;
-        final now = DateTime.now();
-        final oldPlan = reciver.premiumSubscriptionPlan;
-
-        if (oldPlan != null && oldPlan.isAfter(now)) {
-          newPlanExpired = _addOneMonth(oldPlan);
-        } else {
-          newPlanExpired = _addOneMonth(now);
-        }
-
-        final updateData = {
-          "premium_subscription_ref": planRef,
-          "premium_subscription": newPlanExpired,
-          "trial_subscription": null,
-        };
-
-        await reciver.ref.update(updateData);
-
-        sl<FirebaseMessaginService>().sendPushToMentorForGift(reciver.ref, state?.name ?? '-');
-      } else {
-        late DateTime newPlanExpired;
-        final now = DateTime.now();
-        final oldPlan = state?.premiumSubscriptionPlan;
-
-        if (oldPlan != null && oldPlan.isAfter(now)) {
-          newPlanExpired = _addOneMonth(oldPlan);
-        } else {
-          newPlanExpired = _addOneMonth(now);
-        }
-
-        final updateData = {
-          "premium_subscription_ref": planRef,
-          "premium_subscription": newPlanExpired,
-          "trial_subscription": null,
-        };
-
-        await state?.ref.update(updateData);
-
-        emit(state?.copyWith(premiumSubscriptionRef: planRef, premiumSubscriptionPlan: newPlanExpired));
-      }
-    } catch (e) {
-      print('error: {onPurchasePlan}: ${e.toString()}');
+    if (state == null) throw StateError('Пользователь не найден.');
+    if (orderDoc['paid'] != true || orderDoc['fulfilled'] != true) {
+      throw StateError('Оплата ещё не подтверждена сервером.');
     }
-  }
-
-  DateTime _addOneMonth(DateTime date) {
-    int newMonth = date.month + 1;
-    int newYear = date.year;
-
-    if (newMonth > 12) {
-      newMonth = 1;
-      newYear++;
-    }
-
-    int daysInNewMonth = DateTime(newYear, newMonth + 1, 0).day;
-
-    int newDay = date.day > daysInNewMonth ? daysInNewMonth : date.day;
-
-    return DateTime(newYear, newMonth, newDay, date.hour, date.minute, date.second);
+    // Entitlements are granted once by the verified server webhook. A snapshot
+    // replay, reopened screen or modified client must never extend a plan.
+    await refreshProfile();
   }
 
   Future<void> markAsDeleted() async {
-    final myConnections = state?.connections ?? [];
+    final user = state;
+    if (user == null) throw StateError('Пользователь не найден.');
+    final batch = _fs.batch();
+    final myConnections = {...user.connections, ...user.connectionRequests};
     for (final connection in myConnections) {
-      await connection.update({
-        'connections': FieldValue.arrayRemove([state!.ref]),
-        'connection_requests': FieldValue.arrayRemove([state!.ref]),
+      batch.update(connection, {
+        'connections': FieldValue.arrayRemove([user.ref]),
+        'connection_requests': FieldValue.arrayRemove([user.ref]),
       });
     }
 
-    await state?.ref.update({
+    batch.update(user.ref, {
       'deleted': true,
       'banned': null,
       'photo': null,
@@ -279,5 +280,6 @@ class UserCubit extends Cubit<UserModel?> {
       'premium_subscription': null,
       'fcm_token': null,
     });
+    await batch.commit();
   }
 }

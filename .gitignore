@@ -43,3 +43,15 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local runtime credentials and installed Cloud Functions dependencies.
+**/node_modules/
+**/.env
+**/.env.*
+!**/.env.example
+**/.secret.local
+**/.runtimeconfig.json
+
+# Unmodified deployed-function exports can contain embedded credentials.
+/cloudFunctions/*.zip
+/functions/qa_phone_codes.local.json

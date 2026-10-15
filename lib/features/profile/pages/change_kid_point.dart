@@ -38,6 +38,7 @@ class _ChangeKidPointScreenState extends State<ChangeKidPointScreen> {
   });
 
   void onSubmit() async {
+    if (loading) return;
     final valid = form.valid;
     if (valid) {
       int? amount = form.control('amount').value as int?;
@@ -47,7 +48,7 @@ class _ChangeKidPointScreenState extends State<ChangeKidPointScreen> {
         return;
       }
 
-      if(amount == 0) {
+      if (amount <= 0) {
         form.control('amount').setErrors({'min': true});
         return;
       }
@@ -73,17 +74,21 @@ class _ChangeKidPointScreenState extends State<ChangeKidPointScreen> {
         'name': form.control('text').value,
       };
 
-      print('doc: $doc');
-
       try {
         setState(() {
           loading = true;
         });
 
         final ref = CoinChangeModel.collection.doc();
-        await ref.set(doc);
-
-        if (mounted) await widget.kid.ref.update({'points': FieldValue.increment(amount)});
+        await FirebaseFirestore.instance.runTransaction((transaction) async {
+          final kidSnapshot = await transaction.get(widget.kid.ref);
+          final data = kidSnapshot.data() as Map<String, dynamic>?;
+          if (data == null) throw StateError('Ребенок не найден.');
+          final nextPoints = (data['points'] as int? ?? 0) + amount!;
+          if (nextPoints < 0) throw StateError('Недостаточно баллов.');
+          transaction.update(widget.kid.ref, {'points': nextPoints});
+          transaction.set(ref, doc);
+        });
 
         fcm.sendPushToKidOnCoinChanged(mentor, widget.kid.ref, amount);
 
@@ -139,6 +144,7 @@ class _ChangeKidPointScreenState extends State<ChangeKidPointScreen> {
         final control = form.control('amount');
         control.setValidators([
           Validators.required,
+          Validators.min(1),
           Validators.max(totalCoins),
         ]);
 

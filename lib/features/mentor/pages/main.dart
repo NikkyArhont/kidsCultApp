@@ -18,7 +18,7 @@ class _MentorMainScreenState extends State<MentorMainScreen> {
   void initState() {
     super.initState();
     FirebaseMessaginService service = sl<FirebaseMessaginService>();
-    service.setupFCM(context);
+    service.setupFCM();
   }
 
   void onTapTab(int index) async {

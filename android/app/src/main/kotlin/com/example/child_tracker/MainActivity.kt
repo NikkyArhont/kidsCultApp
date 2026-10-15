@@ -1,4 +1,4 @@
-package com.kidscult.app
+package com.kidscult.family
 
 import io.flutter.embedding.android.FlutterActivity
 

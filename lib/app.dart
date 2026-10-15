@@ -4,7 +4,6 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-
 class App extends StatelessWidget {
   const App({super.key});
 
@@ -15,13 +14,13 @@ class App extends StatelessWidget {
 
     return MultiBlocProvider(
       providers: [
-        BlocProvider(create: (context) => sl<UserCubit>()),
-        BlocProvider(create: (context) => sl<PhoneAuthCubit>()),
-        BlocProvider(create: (context) => sl<FillDataCubit>()),
-        BlocProvider(create: (context) => sl<NewChatCubit>()),
-        BlocProvider(create: (context) => sl<CurrentChatCubit>()),
-        BlocProvider(create: (context) => sl<TaskCubit>()),
-        BlocProvider(create: (context) => sl<BonusCubit>()),
+        BlocProvider.value(value: sl<UserCubit>()),
+        BlocProvider.value(value: sl<PhoneAuthCubit>()),
+        BlocProvider.value(value: sl<FillDataCubit>()),
+        BlocProvider.value(value: sl<NewChatCubit>()),
+        BlocProvider.value(value: sl<CurrentChatCubit>()),
+        BlocProvider.value(value: sl<TaskCubit>()),
+        BlocProvider.value(value: sl<BonusCubit>()),
       ],
       child: BlocBuilder<LocaleCubit, Locale>(
         builder: (context, locale) {

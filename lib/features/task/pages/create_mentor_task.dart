@@ -1,4 +1,3 @@
-
 import 'package:child_tracker/index.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -8,7 +7,6 @@ import 'package:go_router/go_router.dart';
 class CreateMentorTaskScreen extends StatelessWidget {
   const CreateMentorTaskScreen({super.key});
 
- 
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
@@ -19,7 +17,7 @@ class CreateMentorTaskScreen extends StatelessWidget {
             if (state.status == MentorTaskCreateStatus.error) {
               SnackBarSerive.showErrorSnackBar(state.errorMessage ?? defaultErrorText);
             } else if (state.status == MentorTaskCreateStatus.success) {
-              context.replace('/kid_create_task/success');
+              context.replace('/mentor_create_task/success');
             }
           },
           builder: (context, state) {
@@ -64,7 +62,7 @@ class CreateMentorTaskScreen extends StatelessWidget {
                         MentorCreateTaskSelectKid(),
                         MentorCreateTaskSetName(),
                         MentorCreateTaskSetPhoto(),
-                         MentorCreateTaskSetPoint(),
+                        MentorCreateTaskSetPoint(),
                         MentorCreateTaskSetStartDate(),
                         MentorCreateTaskSetEndDate(),
                         MentorCreateTaskSetReminder(),

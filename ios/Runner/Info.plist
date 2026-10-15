@@ -19,7 +19,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.3</string>
+	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
@@ -38,8 +38,6 @@
 	<string>Нам необходимо ваше разрешение для показа уведомлений о напоминаниях о задачах.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<key>FirebaseAppDelegateProxyEnabled</key>
-    <string>NO</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

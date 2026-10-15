@@ -1,4 +1,5 @@
 import 'package:child_tracker/index.dart';
+import 'package:child_tracker/shared/services/session_cleanup.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -16,13 +17,14 @@ void showDeleteAccountDialog(BuildContext context) async {
   );
 
   if (result == true && context.mounted) {
+    final userCubit = context.read<UserCubit>();
+    bool authenticationDeleted = false;
     try {
       User? currentUser = FirebaseAuth.instance.currentUser;
-      await currentUser?.delete();
-      if (context.mounted) await context.read<UserCubit>().markAsDeleted();
-      final StorageService storageService = sl();
-      await storageService.clearAllStorage();
-      if (context.mounted)  context.go('/logout_result', extra: 'accountDeleted'.tr());
+      if (currentUser == null) return;
+      await currentUser.delete();
+      authenticationDeleted = true;
+      await userCubit.markAsDeleted();
     } on FirebaseAuthException catch (e) {
       print('Error deleting account: $e');
       if (e.code == 'requires-recent-login') {
@@ -35,6 +37,15 @@ void showDeleteAccountDialog(BuildContext context) async {
     } catch (e) {
       print('Unexpected error: $e');
       if (context.mounted) SnackBarSerive.showErrorSnackBar('${"defaultErrorText".tr()}: $e');
+    } finally {
+      if (authenticationDeleted) {
+        try {
+          await clearLocalSession();
+        } catch (e) {
+          print('Error clearing deleted account session: $e');
+        }
+        if (context.mounted) context.go('/logout_result', extra: 'accountDeleted'.tr());
+      }
     }
   }
 }

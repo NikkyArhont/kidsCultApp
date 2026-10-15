@@ -43,22 +43,17 @@ class _TaskTabScreenState extends State<TaskTabScreen> {
                 automaticallyImplyLeading: false,
                 toolbarHeight: 72,
                 leadingWidth: 0,
-                title: me.isKid ? KidAppBarWidget(me: me, selectedMentor: state.selectedMentor) : MentorAppbarWidget(selectedKid: state.selectedKid),
+                title: me.isKid
+                    ? KidAppBarWidget(me: me, selectedMentor: state.selectedMentor)
+                    : MentorAppbarWidget(selectedKid: state.selectedKid),
               ),
               floatingActionButton: SizedBox(
                 width: 56,
                 height: 56,
                 child: FloatingActionButton(
                   onPressed: () async {
-                    // if (me.isKid) {
-                    //   context.push('/kid_create_task');
-                    // } else {
-                    //   context.push('/mentor_create_task');
-
-                    // }
-
                     if (me.hasSubscription()) {
-                      context.push('/mentor_create_task');
+                      context.push(me.isKid ? '/kid_create_task' : '/mentor_create_task');
                     } else {
                       bool? confirm = await showPlanExpiredModalBottomSheet(context, 'get_subs_for_action'.tr());
                       if (confirm == true && context.mounted) {

@@ -6,6 +6,7 @@ class PaymentService {
   final FirebaseFirestore _fs;
   final UserCubit _userCubit;
   final cf.FirebaseFunctions _functions;
+  final Map<String, String> _pendingOrders = {};
 
   PaymentService({
     required FirebaseFirestore fs,
@@ -57,76 +58,48 @@ class PaymentService {
   }
 
   Future<Map?> createPayment({required SubscriptionModel tariff}) async {
-    try {
-      final newOrderRef = _fs.collection('orders').doc();
-
-      final orderDoc = {
-        "tariff": tariff.ref,
-        "paid": false,
-        "price": tariff.price,
-        "user": _userCubit.state!.ref,
-        "time": FieldValue.serverTimestamp(),
-      };
-
-      await newOrderRef.set(orderDoc);
-
-      final callable = _functions.httpsCallable('initialPayment');
-      final result = await callable.call({'order_id': newOrderRef.id});
-
-      if (result.data['status'] == 'error') {
-        throw Exception(result.data['body'] ?? 'Unknown payment error');
-      }
-
-      if (result.data['url'] == null) {
-        throw Exception('Payment URL is null: ${result.data}');
-      }
-
-      final data = {
-        "url": result.data['url'],
-        "order_id": newOrderRef.id,
-      };
-
-      return data;
-    } catch (e) {
-      rethrow;
-    }
+    final user = _userCubit.state;
+    if (user == null) throw StateError('Необходимо войти в аккаунт.');
+    return _createPayment(tariff: tariff, recipient: user);
   }
 
   Future<Map?> sendGift({required SubscriptionModel tariff, required UserModel user}) async {
-    try {
-      final newOrderRef = _fs.collection('orders').doc();
+    return _createPayment(tariff: tariff, recipient: user);
+  }
 
-      final orderDoc = {
-        "tariff": tariff.ref,
-        "paid": false,
-        "price": tariff.price,
-        "user": user.ref,
-        "sender": _userCubit.state!.ref,
-        "is_gift": true,
-        "time": FieldValue.serverTimestamp(),
-      };
-
-      await newOrderRef.set(orderDoc);
-
-      final callable = _functions.httpsCallable('initialPayment');
-      final result = await callable.call({'order_id': newOrderRef.id});
-
-      if (result.data['status'] == 'error') {
-        throw Exception(result.data['body'] ?? 'Unknown payment error');
-      }
-
-      if (result.data['url'] == null) {
-        throw Exception('Payment URL is null: ${result.data}');
-      }
-
-      final data = {
-        "url": result.data['url'],
-        "order_id": newOrderRef.id,
-      };
-
-      return data;
-    } catch (e) {
-      rethrow;
+  Future<Map<String, dynamic>> _createPayment({required SubscriptionModel tariff, required UserModel recipient}) async {
+    final owner = _userCubit.state;
+    if (owner == null) throw StateError('Необходимо войти в аккаунт.');
+    final key = '${owner.id}:${recipient.id}:${tariff.id}';
+    // Keep the same ID after an ambiguous network error so retrying cannot charge twice.
+    final orderId = _pendingOrders.putIfAbsent(key, () => _fs.collection('orders').doc().id);
+    final result = await _functions.httpsCallable('initialPayment').call({
+      'order_id': orderId,
+      'tariff_id': tariff.id,
+      'recipient_uid': recipient.id,
+    });
+    final data = Map<String, dynamic>.from(result.data as Map);
+    if (data['status'] == 'canceled') {
+      _pendingOrders.remove(key);
+      throw StateError('Оплата отменена. Можно начать новую оплату.');
     }
+    if (data['fulfilled'] == true) _pendingOrders.remove(key);
+    final url = data['url'];
+    if (data['fulfilled'] != true && (url is! String || Uri.tryParse(url)?.scheme != 'https')) {
+      throw StateError('Не удалось открыть оплату. Повторите попытку позже.');
+    }
+    return {'url': url ?? '', 'order_id': orderId};
+  }
+
+  Future<void> refreshPayment(String orderId) async {
+    final result = await _functions.httpsCallable('initialPayment').call({'order_id': orderId, 'status_only': true});
+    final data = Map<String, dynamic>.from(result.data as Map);
+    if (data['fulfilled'] == true || data['status'] == 'canceled') {
+      forgetPayment(orderId);
+    }
+  }
+
+  void forgetPayment(String orderId) {
+    _pendingOrders.removeWhere((_, value) => value == orderId);
   }
 }

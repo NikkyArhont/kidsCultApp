@@ -1,5 +1,5 @@
 import 'package:child_tracker/index.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest.dart' as tz;
@@ -10,6 +10,7 @@ class LocalNotificationService {
 
   // Инициализация плагина
   Future<void> init() async {
+    if (kIsWeb) return;
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_stat_notification_icon');
     const DarwinInitializationSettings initializationSettingsIOS = DarwinInitializationSettings(
@@ -50,6 +51,7 @@ class LocalNotificationService {
 
   // Показ FCM-уведомления как локального
   Future<void> showFCMNotification({required String title, required String body}) async {
+    if (kIsWeb) return;
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'fcm_channel',
       'FCM Notifications',
@@ -184,10 +186,12 @@ class LocalNotificationService {
   // }
 
   Future<void> cancelAllNotifications() async {
+    if (kIsWeb) return;
     await _notificationsPlugin.cancelAll();
   }
 
   Future<void> setDailyDiaryReminder(bool dairyPushSetting, {bool force = false}) async {
+    if (kIsWeb) return;
     if (!dairyPushSetting) {
       print('Настройки уведомления дневника отключана');
       return;
@@ -240,6 +244,7 @@ class LocalNotificationService {
   }
 
   Future<void> toggleDailyDiaryReminders(bool isEnabled) async {
+    if (kIsWeb) return;
     if (isEnabled) {
       await setDailyDiaryReminder(true, force: true); // Включаем напоминания
       print('Ежедневные напоминания о дневнике включены.');

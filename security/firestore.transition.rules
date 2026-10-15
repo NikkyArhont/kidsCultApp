@@ -1,0 +1,78 @@
+rules_version = '2';
+
+// TRANSITION ONLY: preserves the old mobile client's data/payment contract.
+// NOT a complete privacy, balance or payment security policy. See README.md.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function approvedAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.status == 'accept';
+    }
+
+    match /admins/{adminId} {
+      allow get: if signedIn() && request.auth.uid == adminId;
+      allow list, delete: if false;
+
+      // Existing admin registration writes the misspelled profle_filled key.
+      // Neither a phone login nor email registration grants admin privileges.
+      allow create: if signedIn() && request.auth.uid == adminId
+        && request.resource.data.keys().hasOnly([
+          'name', 'email', 'profle_filled', 'profile_filled',
+          'role', 'status', 'created_at'
+        ])
+        && request.resource.data.status == 'wait'
+        && request.resource.data.role == 'admin'
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 200
+        && request.resource.data.created_at == request.time;
+
+      // Approval/revocation is done in the trusted Firebase Console, not a client.
+      allow update: if signedIn() && request.auth.uid == adminId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 200;
+    }
+
+    match /{catalog}/{itemId} {
+      allow read: if signedIn()
+        && catalog in ['games', 'quizzes', 'levels', 'articles', 'tariffs'];
+      allow write: if catalog in ['games', 'quizzes', 'levels', 'articles', 'tariffs']
+        && approvedAdmin();
+    }
+
+    match /levels/{levelId}/users/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // INSECURE LEGACY EXCEPTION. The shipped client reads SMS credentials before
+    // authentication. Remove this entire match AFTER server-side SMS/client rollout
+    // and rotate the exposed provider key. No new code should use this document.
+    match /config/sms_settings {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Compatibility boundary, NOT ownership enforcement. Authenticated users can
+    // still access other users' records here. Never call this production hardening.
+    // Global task suggestions, user leaderboard, paired connections and old
+    // client-granted subscriptions require coordinated code changes before removal.
+    match /{collection}/{document=**} {
+      allow read, write: if signedIn() && collection in [
+        'users', 'tasks', 'bonuses', 'coin_changes',
+        'dairy', 'chats', 'notifications', 'orders'
+      ];
+    }
+
+    // Denied to every client, including admins. Cloud Admin SDK is unaffected.
+    match /phone_verifications/{document=**} { allow read, write: if false; }
+    match /_otp_challenges/{document=**} { allow read, write: if false; }
+    match /_otp_rate_limits/{document=**} { allow read, write: if false; }
+    match /payment_intents/{document=**} { allow read, write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

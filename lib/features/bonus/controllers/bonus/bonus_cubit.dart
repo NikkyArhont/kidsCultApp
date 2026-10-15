@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:child_tracker/index.dart';
+import 'package:child_tracker/shared/services/balance_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -22,10 +23,26 @@ class BonusCubit extends Cubit<BonusState> {
         super(const BonusState());
 
   StreamSubscription? _bonusStreamSubscription;
+  int _subscriptionGeneration = 0;
+  int _sessionGeneration = 0;
 
-  void init() {
+  bool Function() _operationGuard() {
+    final generation = _sessionGeneration;
+    final userId = _userCubit.state?.id;
+    return () => !isClosed && generation == _sessionGeneration && userId != null && _userCubit.state?.id == userId;
+  }
+
+  Future<void> init() async {
+    final generation = ++_subscriptionGeneration;
+    final previous = _bonusStreamSubscription;
+    _bonusStreamSubscription = null;
+    await previous?.cancel();
+    if (isClosed || generation != _subscriptionGeneration) return;
     final me = _userCubit.state;
-    if (me == null) return;
+    if (me == null) {
+      emit(state.reset());
+      return;
+    }
     emit(state.copyWith(status: BonusStateStatus.loading));
 
     late Query query;
@@ -54,16 +71,26 @@ class BonusCubit extends Cubit<BonusState> {
       }
     }
 
-    _bonusStreamSubscription = query.snapshots().listen((event) {
-      final bonuses = event.docs.map((e) => BonusModel.fromFirestore(e)).toList();
-      emit(state.copyWith(bonuses: bonuses, status: BonusStateStatus.success));
-    })
-      ..onError(
-        (_, e) {
-          print('error: {init}: ${e.toString()}');
-          emit(state.copyWith(errorMessage: e.toString(), status: BonusStateStatus.error));
-        },
-      );
+    _bonusStreamSubscription = query.snapshots().listen(
+      (event) {
+        if (isClosed || generation != _subscriptionGeneration) return;
+        final bonuses = event.docs.map((e) => BonusModel.fromFirestore(e)).toList();
+        emit(state.copyWith(bonuses: bonuses, status: BonusStateStatus.success));
+      },
+      onError: (Object error) {
+        if (isClosed || generation != _subscriptionGeneration) return;
+        emit(state.copyWith(errorMessage: error.toString(), status: BonusStateStatus.error));
+      },
+    );
+  }
+
+  Future<void> reset() async {
+    ++_sessionGeneration;
+    ++_subscriptionGeneration;
+    final previous = _bonusStreamSubscription;
+    _bonusStreamSubscription = null;
+    if (!isClosed) emit(state.reset());
+    await previous?.cancel();
   }
 
   void onKidSelected(UserModel? kid) {
@@ -88,13 +115,20 @@ class BonusCubit extends Cubit<BonusState> {
     emit(state.copyWith(selectedChip: chip));
   }
 
-  void cancelBonus(BonusModel bonus, String? reason) async {
+  Future<void> cancelBonus(BonusModel bonus, String? reason) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.canceling));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.canceled.name,
-        'cancel_reason': reason,
-      });
+      await _updateStatus(
+          bonus,
+          {
+            'status': BonusStatus.canceled.name,
+            'cancel_reason': reason,
+          },
+          allowed: {BonusStatus.active, BonusStatus.needApprove},
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner cancel bonus
@@ -103,63 +137,75 @@ class BonusCubit extends Cubit<BonusState> {
 
       emit(state.copyWith(status: BonusStateStatus.cancelSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {cancelBonus}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.cancelError, errorMessage: e.toString()));
     }
   }
 
   Future<bool> deleteBonus(BonusModel bonus) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return false;
     try {
-      await bonus.ref.update({'status': BonusStatus.deleted.name});
+      await _updateStatus(bonus, {'status': BonusStatus.deleted.name},
+          allowed: {
+            BonusStatus.active,
+            BonusStatus.needApprove,
+            BonusStatus.canceled,
+            BonusStatus.rejected,
+            BonusStatus.received,
+          },
+          isCurrent: isCurrent);
+      if (!isCurrent()) return false;
 
       return true;
     } catch (e) {
+      if (!isCurrent()) return false;
       print('error: {deleteBonus}: ${e.toString()}');
       return false;
     }
   }
 
-  void requestBonusByKid(BonusModel bonus) async {
+  Future<void> requestBonusByKid(BonusModel bonus) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.requestingReceive));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.readyToReceive.name,
-      });
-
-      int bonusPoint = bonus.point ?? 0;
-      await _userCubit.onChangePoint(-bonusPoint);
-
-      final ref = CoinChangeModel.collection.doc();
-
-      final doc = {
-        'kid': bonus.kid,
-        'mentor': bonus.mentor,
-        'created_at': FieldValue.serverTimestamp(),
-        'coin': -bonusPoint,
-        'name': 'Покупка бонуса "${bonus.name}"',
-      };
-
-      await ref.set(doc);
+      final user = _userCubit.state;
+      if (user == null || !user.isKid) throw StateError('Ребенок не найден.');
+      final result = await BalanceService(_fs).purchaseBonus(bonus.id, user.id);
+      if (!isCurrent()) return;
+      if (_userCubit.state?.id == result.kidId) {
+        _userCubit.setUser(_userCubit.state!.copyWith(points: result.points));
+      }
 
       emit(state.copyWith(status: BonusStateStatus.requestReceiveSuccess));
 
-      if (_userCubit.state?.isKid == true) {
+      if (result.changed && bonus.mentor != null) {
         //kid request bonus
-        _fcm.sendPushToMentorOnBonusRequested(bonus.mentor!, _userCubit.state?.name ?? '-', bonus.name, bonus.id);
+        _fcm.sendPushToMentorOnBonusRequested(bonus.mentor!, user.name, bonus.name, bonus.id);
       }
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {requestBonusByKid}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.requestReceiveError, errorMessage: e.toString()));
     }
   }
 
-  void rejectBonus(BonusModel bonus, String? reason) async {
+  Future<void> rejectBonus(BonusModel bonus, String? reason) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.rejecting));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.rejected.name,
-        'cancel_reason': reason,
-      });
+      await _updateStatus(
+          bonus,
+          {
+            'status': BonusStatus.rejected.name,
+            'cancel_reason': reason,
+          },
+          allowed: {BonusStatus.needApprove},
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner reject bonus
@@ -168,36 +214,45 @@ class BonusCubit extends Cubit<BonusState> {
 
       emit(state.copyWith(status: BonusStateStatus.rejectSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {rejectBonus}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.rejectError, errorMessage: e.toString()));
     }
   }
 
-  void rejectRequest(BonusModel bonus, String? reason) async {
+  Future<void> rejectRequest(BonusModel bonus, String? reason) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.rejecting));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.rejected.name,
-        'cancel_reason': reason,
-      });
-
-      int bonusPoint = bonus.point ?? 0;
-      await _userCubit.onChangePoint(bonusPoint);
+      final user = _userCubit.state;
+      if (user == null || user.isKid) throw StateError('Наставник не найден.');
+      await BalanceService(_fs).refundBonus(bonus.id, user.id, reason);
+      if (!isCurrent()) return;
 
       emit(state.copyWith(status: BonusStateStatus.rejectSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {rejectRequest}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.rejectError, errorMessage: e.toString()));
     }
   }
 
-  void approveBonus(BonusModel bonus, int point) async {
+  Future<void> approveBonus(BonusModel bonus, int point) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.approving));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.active.name,
-        'point': point,
-      });
+      if (point < 0) throw StateError('Некорректное количество баллов.');
+      await _updateStatus(
+          bonus,
+          {
+            'status': BonusStatus.active.name,
+            'point': point,
+          },
+          allowed: {BonusStatus.needApprove},
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner approve bonus
@@ -206,17 +261,25 @@ class BonusCubit extends Cubit<BonusState> {
 
       emit(state.copyWith(status: BonusStateStatus.approveSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {approveBonus}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.approveError, errorMessage: e.toString()));
     }
   }
 
-  void approveRequest(BonusModel bonus) async {
+  Future<void> approveRequest(BonusModel bonus) async {
+    final isCurrent = _operationGuard();
+    if (!isCurrent()) return;
     emit(state.copyWith(status: BonusStateStatus.requestApproving));
     try {
-      await bonus.ref.update({
-        'status': BonusStatus.received.name,
-      });
+      await _updateStatus(
+          bonus,
+          {
+            'status': BonusStatus.received.name,
+          },
+          allowed: {BonusStatus.readyToReceive},
+          isCurrent: isCurrent);
+      if (!isCurrent()) return;
 
       if (_userCubit.state?.isKid == false) {
         //mentor owner approve bonus request
@@ -225,14 +288,38 @@ class BonusCubit extends Cubit<BonusState> {
 
       emit(state.copyWith(status: BonusStateStatus.requestApproveSuccess));
     } catch (e) {
+      if (!isCurrent()) return;
       print('error: {approveRequest}: ${e.toString()}');
       emit(state.copyWith(status: BonusStateStatus.requestApproveError, errorMessage: e.toString()));
     }
   }
 
+  Future<void> _updateStatus(
+    BonusModel bonus,
+    Map<String, dynamic> update, {
+    required bool Function() isCurrent,
+    required Set<BonusStatus> allowed,
+  }) async {
+    if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+    final ref = _fs.collection('bonuses').doc(bonus.id);
+    await _fs.runTransaction((transaction) async {
+      if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+      final snapshot = await transaction.get(ref);
+      if (!isCurrent()) throw StateError('Сессия пользователя изменилась.');
+      final data = snapshot.data();
+      if (data == null) throw StateError('Бонус не найден.');
+      final current = data['status'];
+      if (current == update['status']) return;
+      if (!allowed.any((status) => status.name == current) || current != bonus.status?.name) {
+        throw StateError('Бонус уже изменен. Обновите страницу.');
+      }
+      transaction.update(ref, update);
+    });
+  }
+
   @override
-  Future<void> close() {
-    _bonusStreamSubscription?.cancel();
-    return super.close();
+  Future<void> close() async {
+    await reset();
+    await super.close();
   }
 }

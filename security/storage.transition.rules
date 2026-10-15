@@ -1,0 +1,39 @@
+rules_version = '2';
+
+// TRANSITION ONLY. Shared chat/task files remain accessible to signed-in users.
+// Apply the companion Firestore rules and audit admins BEFORE these rules.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function approvedAdmin() {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/admins/$(request.auth.uid)).data.status == 'accept';
+    }
+
+    match /admins/{file=**} {
+      allow read: if signedIn();
+      allow write: if approvedAdmin();
+    }
+
+    match /users/{userId}/{file=**} {
+      // Profiles, bonus photos and task photos are shared by the current client.
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Group photo is uploaded BEFORE its Firestore chat document is created.
+    // A strict membership rule here would break the existing creation flow.
+    match /chats/{chatId}/{file=**} {
+      allow read, write: if signedIn();
+    }
+
+    match /task/{taskId}/{file=**} {
+      allow read, write: if signedIn();
+    }
+
+    match /{file=**} { allow read, write: if false; }
+  }
+}

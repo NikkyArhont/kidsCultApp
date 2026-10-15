@@ -1,19 +1,24 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { onCall } = require('firebase-functions/v2/https');
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { maySendPush } = require('./push_authorization');
 
 admin.initializeApp();
 const db = admin.firestore();
 
 const { sendPushNotificationToUser } = require('./sendPush');
 const payments = require('./payment');
+const phoneAuth = require('./auth');
+
+exports.sendCodeSecure = phoneAuth.sendCodeSecure;
+exports.verifyCodeSecure = phoneAuth.verifyCodeSecure;
 
 exports.initialPayment = payments.initialPayment;
 exports.ukassaWebHook = payments.UkassaWebHook;
 
-exports.checkOverdueTasks = onSchedule('0 0,12 * * *', // ⏰ Каждый день в 00:00 и 12:00
-    {
+exports.checkOverdueTasks = onSchedule({
+        schedule: '0 0,12 * * *',
         timeZone: 'Europe/Moscow', // 🌍 Московский часовой пояс
     }, async (event) => {
         const now = admin.firestore.Timestamp.now();
@@ -122,14 +127,22 @@ exports.checkOverdueTasksTest = functions.https.onRequest(async (req, res) => {
 
 // 📲 HTTPS Callable для Flutter
 exports.sendPushNotificationToUser = onCall(async (request) => {
-    const { userId, title, body = '', data = {} } = request.data;
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+    const { userId, title, body = '', data = {} } = request.data || {};
+    if (typeof title !== 'string' || title.length > 200 || typeof body !== 'string' ||
+        body.length > 2000 || !data || typeof data !== 'object' ||
+        Object.keys(data).length > 10 || Object.values(data).some(value => typeof value !== 'string')) {
+        throw new HttpsError('invalid-argument', 'Invalid notification.');
+    }
+    if (!await maySendPush(db, request.auth.uid, userId, data)) {
+        throw new HttpsError('permission-denied', 'Notification is not permitted.');
+    }
 
     try {
         const messageId = await sendPushNotificationToUser(userId, title, body, data);
         return { success: true, messageId };
     } catch (error) {
-        console.error('Ошибка при отправке push:', error);
-        return { success: false, error: error.message };
+        return { success: false, error: 'Notification could not be delivered.' };
     }
 });
 
@@ -205,7 +218,7 @@ exports.sendReminders = functions.https.onRequest(async (req, res) => {
 
             try {
                 await admin.messaging().send(message);
-                console.log(`Sent push for task ${taskId} to ${kid.fcm_token}`);
+                console.log(`Sent reminder for task ${taskId}`);
             } catch (error) {
                 console.error(`Error sending push for task ${taskId}:`, error);
             }

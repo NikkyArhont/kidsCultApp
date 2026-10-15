@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "source": "functions/auth_function-source",
+    "ignore": [
+      "node_modules",
+      "*.test.js",
+      ".git"
+    ]
+  }
+}
